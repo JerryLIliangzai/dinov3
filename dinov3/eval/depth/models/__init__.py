@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 from dinov3.eval.depth.checkpoint_utils import load_checkpoint
+from dinov3.eval.depth.utils import create_chmv2_mixlog_bins, create_outputs_with_chmv2_mixlog_norm
 
 from .dpt_head import DPTHead
 from .linear_head import LinearHead
@@ -18,10 +19,8 @@ from .encoder import BackboneLayersSet, DinoVisionTransformerWrapper, PatchSizeA
 class DecoderConfig:
     min_depth: float = 0.001
     max_depth: float = 80
-    bins_strategy: str = "linear"  # (choice: ["linear", "log"]) distribution of bins across the range
-    norm_strategy: str = (
-        "linear"  # (choice: ["linear", "softmax", "sigmoid"]) activation used before normalization of depth-bin logits
-    )
+    bins_strategy: str = "linear"  # (choice: ["linear", "log", "chmv2_mixlog"]) distribution of bins across the range
+    norm_strategy: str = "linear"  # (choice: ["linear", "softmax", "sigmoid", "chmv2_mixlog"]) activation used before normalization of depth-bin logits
     head_kwargs: dict[str, Any] = field(default_factory=dict)
     backbone_out_layers: Any = (
         BackboneLayersSet.FOUR_EVEN_INTERVALS  # One of BackboneLayersSet(Enum) or a list of indices e.g. [0, 1, 2, 3]
@@ -49,11 +48,10 @@ class FeaturesToDepth(torch.nn.Module):
         Args:
         min_depth (float): minimum depth, used to calibrate the depth range
         max_depth (float): maximum depth, used to calibrate the depth range
-        bins_strategy (str): Choices are 'linear' or 'log', for Uniform or Scale Invariant distributions for depth bins.
-                             See AdaBins [1] for more details.
-        norm_strategy (str): Choices are 'linear', 'softmax' or 'sigmoid', for the conversion of features to depth logits
-        scale_up (bool): If true, and only if regression by classification is not used, the result is multiplied by max_depth
-
+        bins_strategy (str): Choices are 'linear', 'log', or 'chmv2_mixlog'. The first two are for Uniform or Scale Invariant distributions
+                             for depth bins. See AdaBins [1] for more details.
+                             "chmv2_mixlog" uses customized mixed log bins for the CHMv2 head.
+        norm_strategy (str): Choices are 'linear', 'softmax', 'sigmoid' or 'chmv2_mixlog', for the conversion of features to depth logits
 
         Example:
         x = depth_model(input_image)  # N C H W
@@ -66,8 +64,10 @@ class FeaturesToDepth(torch.nn.Module):
         super().__init__()
         self.min_depth = min_depth
         self.max_depth = max_depth
-        assert bins_strategy in ["linear", "log"], "Support bins_strategy: linear, log"
-        assert norm_strategy in ["linear", "softmax", "sigmoid"], "Support norm_strategy: linear, softmax, sigmoid"
+        assert bins_strategy in ["linear", "log", "chmv2_mixlog"], "Support bins_strategy: linear, log, chmv2_mixlog"
+        assert norm_strategy in ["linear", "softmax", "sigmoid", "chmv2_mixlog"], (
+            "Support norm_strategy: linear, softmax, sigmoid, chmv2_mixlog"
+        )
 
         self.bins_strategy = bins_strategy
         self.norm_strategy = norm_strategy
@@ -85,20 +85,25 @@ class FeaturesToDepth(torch.nn.Module):
                     device=x.device,
                 )
                 bins = torch.exp(bins)
+            else:  # bins_strategy = "chmv2_mixlog"
+                bins = create_chmv2_mixlog_bins(self.min_depth, self.max_depth, n_bins, x.device)
 
-            # following Adabins, default linear
-            if self.norm_strategy == "linear":
-                logit = torch.relu(x)
-                eps = 0.1
-                logit = logit + eps
-                logit = logit / logit.sum(dim=1, keepdim=True)
-            elif self.norm_strategy == "softmax":
-                logit = torch.softmax(x, dim=1)
-            elif self.norm_strategy == "sigmoid":
-                logit = torch.sigmoid(x)
-                logit = logit / logit.sum(dim=1, keepdim=True)
+            # following Adabins, default is linear
+            if self.norm_strategy in ["linear", "softmax", "sigmoid"]:
+                if self.norm_strategy == "linear":
+                    logit = torch.relu(x)
+                    eps = 0.1
+                    logit = logit + eps
+                    logit = logit / logit.sum(dim=1, keepdim=True)
+                elif self.norm_strategy == "softmax":
+                    logit = torch.softmax(x, dim=1)
+                else:  # norm_strategy = "sigmoid"
+                    logit = torch.sigmoid(x)
+                    logit = logit / logit.sum(dim=1, keepdim=True)
+                output = torch.einsum("ikmn,k->imn", [logit, bins]).unsqueeze(dim=1)
 
-            output = torch.einsum("ikmn,k->imn", [logit, bins]).unsqueeze(dim=1)
+            else:  # norm_strategy = "chmv2_mixlog"
+                output = create_outputs_with_chmv2_mixlog_norm(x, bins)
         else:
             # standard regression
             output = torch.relu(x) + self.min_depth

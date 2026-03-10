@@ -1,6 +1,8 @@
-🆕 [2025-11-20] Distillation code and configurations for ConvNeXt backbones are now released!
+🆕 [2026-03-10] :fire: The [Canopy Height Maps v2 (CHMv2) model](https://arxiv.org/abs/2603.06382) and inference code are now available (more details on downloading the model weights and using the code [here](#canopy-height-maps-v2-chmv2)). Building on our original high-resolution canopy height maps released in 2024, CHMv2 delivers substantial improvements in accuracy, detail, and global consistency by leveraging DINOv3.
 
-🆕 [2025-10-13] [Semantic segmentation](https://github.com/facebookresearch/dinov3?tab=readme-ov-file#linear-segmentation-with-data-augmentation-on-ade20k) (ADE20K) and [monocular depth estimation](https://github.com/facebookresearch/dinov3?tab=readme-ov-file#linear-depth-estimation-on-nyuv2-depth) (NYUv2-Depth) linear probing code are now released!
+[2025-11-20] Distillation code and configurations for ConvNeXt backbones are now released!
+
+[2025-10-13] [Semantic segmentation](https://github.com/facebookresearch/dinov3?tab=readme-ov-file#linear-segmentation-with-data-augmentation-on-ade20k) (ADE20K) and [monocular depth estimation](https://github.com/facebookresearch/dinov3?tab=readme-ov-file#linear-depth-estimation-on-nyuv2-depth) (NYUv2-Depth) linear probing code are now released!
 
 [2025-09-17] DINOv3 backbones are now supported by the [PyTorch Image Models / timm](https://github.com/huggingface/pytorch-image-models/) library starting with version [1.0.20](https://github.com/huggingface/pytorch-image-models/releases/tag/v1.0.20)
 
@@ -790,6 +792,41 @@ PYTHONPATH=${PWD} python -m dinov3.run.submit dinov3/eval/text/train_dinotxt.py 
 Launching the above trains text alignment on 4 nodes with 8 gpus each (32 gpus in total).
 Please note that the text alignment model in the DINOv3 paper was trained on a private dataset and here we have given an example config in ```dinov3/eval/text/configs/dinov3_vitl_text.yaml``` using ```CocoCaptions``` dataset for illustration purposes.
 Please adapt the provided ```CocoCaptions``` dataset class, the dataset can be found [here](https://www.kaggle.com/datasets/nikhil7280/coco-image-caption)
+
+
+## Canopy Height Maps v2 (CHMv2)
+
+ [[`Paper `](https://arxiv.org/abs/2603.06382)] [[`Blog`](http://ai.meta.com/blog/world-resources-institute-dino-canopy-height-maps-v2)]
+
+John Brandt, Seungeun Yi, Jamie Tolan, Xinyuan Li, Peter Potapov, Jessica Ertel, Justine Spore, Huy V. Vo, Michaël Ramamonjisoa, Patrick Labatut, Piotr Bojanowski, Camille Couprie.
+
+ℹ️ You can follow the link provided below to get access to the CHMv2 model weights: once accepted, an e-mail will be sent with the URL pointing to the available model weights. The URL can then be used to either:
+
+- download the model weights to a local filesystem and point torch.hub.load() to these local weights via the `weights` parameters, or
+- directly invoke torch.hub.load() to download and load a backbone from its URL.
+
+CHMv2 uses the DINOv3 ViT-L/16 satellite as the backbone, available after requesting access [here](https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/).
+
+⚠️ Please use wget instead of a web browser to download the weights.
+
+Download link: https://ai.meta.com/resources/models-and-libraries/chmv2-downloads/
+
+```
+import torch
+from dinov3.hub.backbones import Weights
+
+REPO_DIR = <PATH/TO/A/LOCAL/DIRECTORY/WHERE/THE/DINOv3/REPO/WAS/CLONED>
+
+chmv2_model = torch.hub.load(
+    REPO_DIR,
+    'dinov3_vitl16_chmv2',
+    source="local",
+    weights="<CHMV2_MODEL/CHECKPOINT/URL/OR/PATH>",
+    backbone_weights=Weights.SAT493M,  # or <DINOV3_VITL_SAT/CHECKPOINT/URL/OR/PATH>
+)
+```
+
+Refer to this [notebook](notebooks/chmv2_inference.ipynb) for an example of how to use the DINOv3 + CHMv2 model.
 
 ## License
 

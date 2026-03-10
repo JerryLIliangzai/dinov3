@@ -19,6 +19,7 @@ from .backbones import (
 
 
 class DepthWeights(Enum):
+    CHMV2 = "CHMV2"
     SYNTHMIX = "SYNTHMIX"
 
 
@@ -105,7 +106,7 @@ def _make_dinov3_dpt_depther(
         pretrained=pretrained,
         weights=backbone_weights,
     )
-    
+
     depther = make_depther_from_config(
         backbone,
         config=_get_depther_config(backbone_name, depth_range),
@@ -143,3 +144,54 @@ def dinov3_vit7b16_dd(
         autocast_dtype=autocast_dtype,
         **kwargs,
     )
+
+
+def _get_chmv2_config(
+    **kwargs,
+):
+    return DecoderConfig(
+        min_depth=0.001,
+        max_depth=96.0,
+        backbone_out_layers=[5, 11, 17, 23],
+        n_output_channels=256,
+        use_backbone_norm=True,
+        use_batchnorm=False,
+        use_cls_token=True,
+        type="dpt",
+        bins_strategy="chmv2_mixlog",
+        norm_strategy="chmv2_mixlog",
+        head_kwargs={
+            "n_hidden_channels": 128,
+            "use_bias": True,
+            "projection_after_fusion": False,
+        },
+        **kwargs,
+    )
+
+
+def dinov3_vitl16_chmv2(
+    pretrained: bool = True,
+    weights: DepthWeights | str = DepthWeights.CHMV2,
+    backbone_weights: BackboneWeights | str = BackboneWeights.SAT493M,
+    check_hash: bool = False,
+    autocast_dtype: torch.dtype = torch.float32,
+    **kwargs,
+):
+    backbone: torch.nn.Module = dinov3_vitl16(pretrained=pretrained, weights=backbone_weights)
+
+    chmv2_depther = make_depther_from_config(
+        backbone,
+        config=_get_chmv2_config(),
+        autocast_dtype=autocast_dtype,
+    )
+
+    if pretrained:
+        if isinstance(weights, DepthWeights):
+            assert weights == DepthWeights.CHMV2, f"Unsupported chmv2 weights {weights}"
+            weights_name = weights.value.lower()
+            url = DINOV3_BASE_URL + f"/chmv2/dinov3_vitl16_{weights_name}_dpt_head-3703d643.pth"
+        else:
+            url = convert_path_or_url_to_url(weights)
+        checkpoint = torch.hub.load_state_dict_from_url(url, map_location="cpu", check_hash=check_hash)
+        chmv2_depther.decoder.load_state_dict(checkpoint, strict=True)
+    return chmv2_depther

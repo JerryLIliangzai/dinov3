@@ -71,6 +71,78 @@ def align_depth_least_square(
     return aligned_pred, scale, shift
 
 
+def create_chmv2_mixlog_bins(min_depth, max_depth, n_bins, device):
+    """
+    Creates mixed log bins for the CHMv2 model.
+    Bins are interpolated between linear and log distributions.
+
+    Note: max_depth is divided by 8.0 because the CHMv2 model was trained
+    with internally scaled depth values. The scaling is reversed in
+    `create_outputs_with_chmv2_mixlog_norm` by multiplying by 8.0.
+    """
+    scaled_max_depth = max_depth / 8.0
+    linear = torch.linspace(min_depth, scaled_max_depth, n_bins, device=device)
+    log = torch.exp(
+        torch.linspace(
+            torch.log(torch.tensor(min_depth)),
+            torch.log(torch.tensor(scaled_max_depth)),
+            n_bins,
+            device=device,
+        )
+    )
+    t = torch.linspace(1.0, 0.0, n_bins, device=device)
+    bins = t * log + (1.0 - t) * linear
+    return bins
+
+
+def create_outputs_with_chmv2_mixlog_norm(
+    input: torch.Tensor,
+    bins: torch.Tensor,
+    max_clamp_value: float = 1e-4,
+    eps_shift: float = 1e-8,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """
+    Converts depth bin logits to depth values using mixlog normalization, specifically
+    for the CHMv2 model.
+    This function implements a "soft-argmax" style depth prediction, where the output
+    is a weighted sum of depth bins, with weights derived from the input logits.
+    The CHMv2 model outputs values that are 8x smaller than actual depth in meters,
+    so we multiply by 8.0 at the end.
+
+    Args:
+        input: Raw logits from the decoder head.
+        bins: Depth bin centers created by `create_chmv2_mixlog_bins`.
+        max_clamp_value: Maximum value for the positive shift
+        eps_shift: Epsilon added to shift to prevent division by zero
+        eps: Epsilon for numerical stability in division and final clamping
+
+    Returns:
+        Depth map in meters (after x8.0 to the outputs)
+    """
+    y = torch.relu(input)
+
+    # Ensure strictly positive values by adding a small shift
+    m = y.amin(dim=1, keepdim=True)
+    shift = (-m).clamp_min(0.0).clamp_max(max_clamp_value) + eps_shift
+    y_pos = y + shift
+
+    # Normalize to get weights that sum to 1 (linear normalization)
+    # Similar to softmax but without the exponential to preserve relative magnitudes
+    denom = y_pos.sum(dim=1, keepdim=True)
+    denom = torch.nan_to_num(denom, nan=1.0, posinf=1.0, neginf=1.0).clamp_min(eps)
+    weights = y_pos / denom  # (N, n_bins, H, W), sums to 1 along dim=1
+
+    # Compute weighted sum of depth bins (soft-argmax style depth prediction)
+    bins_broadcast = bins.view(1, -1, 1, 1).clamp_min(eps)  # (1, n_bins, 1, 1) to match the weights shape
+    output = (weights * bins_broadcast).sum(dim=1, keepdim=True).clamp_min(eps)  # (N, 1, H, W)
+
+    # Scale back to meters (reverse the /8.0 applied in `create_chmv2_mixlog_bins``)
+    output = output * 8.0
+
+    return output
+
+
 def setup_model_ddp(model: torch.nn.Module, device: torch.device | int):
     model = DDP(model.to(device), device_ids=[device])
     logger.info(f"Model moved to rank {device}")

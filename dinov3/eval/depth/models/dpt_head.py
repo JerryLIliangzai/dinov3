@@ -369,7 +369,7 @@ class PreActResidualConvUnit(nn.Module):
         init_cfg (dict, optional): Initialization config dict. Default: None.
     """
 
-    def __init__(self, in_channels, act_cfg, norm_cfg, stride=1, dilation=1, init_cfg=None):
+    def __init__(self, in_channels, act_cfg, norm_cfg, stride=1, dilation=1, bias=False):
         super(PreActResidualConvUnit, self).__init__()  # init_cfg)
         self.conv1 = ConvModule(
             in_channels,
@@ -380,7 +380,7 @@ class PreActResidualConvUnit(nn.Module):
             dilation=dilation,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg,
-            bias=False,
+            bias=bias,
             order=("act", "conv", "norm"),
         )
         self.conv2 = ConvModule(
@@ -390,7 +390,7 @@ class PreActResidualConvUnit(nn.Module):
             padding=1,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg,
-            bias=False,
+            bias=bias,
             order=("act", "conv", "norm"),
         )
 
@@ -414,7 +414,7 @@ class FeatureFusionBlock(nn.Module):
         init_cfg (dict, optional): Initialization config dict. Default: None.
     """
 
-    def __init__(self, in_channels, act_cfg, norm_cfg, expand=False, align_corners=True, init_cfg=None):
+    def __init__(self, in_channels, act_cfg, norm_cfg, expand=False, align_corners=True, bias=False):
         super(FeatureFusionBlock, self).__init__()  # init_cfg)
         self.in_channels = in_channels
         self.expand = expand
@@ -423,8 +423,12 @@ class FeatureFusionBlock(nn.Module):
         if self.expand:
             self.out_channels = in_channels // 2
         self.project = ConvModule(self.in_channels, self.out_channels, kernel_size=1, act_cfg=None, bias=True)
-        self.res_conv_unit1 = PreActResidualConvUnit(in_channels=self.in_channels, act_cfg=act_cfg, norm_cfg=norm_cfg)
-        self.res_conv_unit2 = PreActResidualConvUnit(in_channels=self.in_channels, act_cfg=act_cfg, norm_cfg=norm_cfg)
+        self.res_conv_unit1 = PreActResidualConvUnit(
+            in_channels=self.in_channels, act_cfg=act_cfg, norm_cfg=norm_cfg, bias=bias
+        )
+        self.res_conv_unit2 = PreActResidualConvUnit(
+            in_channels=self.in_channels, act_cfg=act_cfg, norm_cfg=norm_cfg, bias=bias
+        )
 
     def forward(self, *inputs):
         x = inputs[0]
@@ -440,12 +444,11 @@ class FeatureFusionBlock(nn.Module):
             else:
                 res = inputs[1]
             x = x + self.res_conv_unit1(res)
-        x = self.res_conv_unit2(x)  # ok
+        x = self.res_conv_unit2(x)
 
         x = torch.nn.functional.interpolate(x, scale_factor=2, mode="bilinear", align_corners=self.align_corners)
-        #  ok
 
-        x = self.project(x)  # ok
+        x = self.project(x)
         return x
 
 
@@ -472,15 +475,19 @@ class DPTHead(nn.Module):
         readout_type="project",
         expand_channels=False,
         n_output_channels=256,
-        use_batchnorm=False,  # TODO
+        n_hidden_channels=32,
+        use_batchnorm=False,
+        use_bias=False,
+        projection_after_fusion=True,
         **kwargs,
     ):
         super(DPTHead, self).__init__(**kwargs)
         self.channels = channels
         self.n_output_channels = n_output_channels
+        self.n_hidden_channels = n_hidden_channels
         self.in_channels = in_channels
         self.expand_channels = expand_channels
-        self.norm_cfg = None  # TODO CHECK THIS
+        self.norm_cfg = None
         self.reassemble_blocks = ReassembleBlocks(
             in_channels=in_channels,
             out_channels=post_process_channels,
@@ -497,15 +504,19 @@ class DPTHead(nn.Module):
         self.fusion_blocks = nn.ModuleList()
         self.act_cfg = {"type": "ReLU"}
         for _ in range(len(self.convs)):
-            self.fusion_blocks.append(FeatureFusionBlock(self.channels, self.act_cfg, self.norm_cfg))
+            self.fusion_blocks.append(FeatureFusionBlock(self.channels, self.act_cfg, self.norm_cfg, bias=use_bias))
         self.fusion_blocks[0].res_conv_unit1 = None
-        self.project = ConvModule(self.channels, self.channels, kernel_size=3, padding=1, norm_cfg=self.norm_cfg)
+        self.project = (
+            ConvModule(self.channels, self.channels, kernel_size=3, padding=1, norm_cfg=self.norm_cfg)
+            if projection_after_fusion
+            else nn.Identity()
+        )
         self.num_fusion_blocks = len(self.fusion_blocks)
         self.num_reassemble_blocks = len(self.reassemble_blocks.resize_layers)
         self.num_post_process_channels = len(self.post_process_channels)
         assert self.num_fusion_blocks == self.num_reassemble_blocks
         assert self.num_reassemble_blocks == self.num_post_process_channels
-        self.conv_depth = UpConvHead(self.channels, self.n_output_channels)
+        self.conv_depth = UpConvHead(self.channels, self.n_output_channels, self.n_hidden_channels)
 
     def forward_features(self, inputs):
         assert len(inputs) == self.num_reassemble_blocks, (
