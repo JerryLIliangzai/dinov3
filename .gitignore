@@ -16,3 +16,12 @@ dist/
 
 # Ignore vscode directory
 .vscode/
+# 排除大文件和临时文件
+weights/
+data/
+__pycache__/
+*.pth
+*.npy
+*.log
+.ipynb_checkpoints/
+outputs/
